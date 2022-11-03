@@ -6,8 +6,10 @@
 #include <ESP8266WebServer.h>
 
 
-char *ssid;
-char *password;
+// char *ssid = "sensor";
+// char *password = "123456789";
+char ssid[20];
+char password[20];
 
 IPAddress local_IP(192,168,4,1);
 IPAddress gateway(192,168,4,254);
@@ -17,7 +19,7 @@ ESP8266WebServer    server(80);
 
 
 void handlePortal();
-enum system_state { unknown, booting, wifi_connecting, wifi_ready, wifi_ap_mode};
+enum system_state { unknown, booting, wifi_reset, wifi_connecting, wifi_ready, wifi_ap_mode};
 
 
 struct system_configuration {
@@ -34,68 +36,64 @@ unsigned long startMillis;  //some global variables available anywhere in the pr
 unsigned long currentMillis;
 unsigned long period = 1000;  //the value is a number of milliseconds
 const byte ledPin = D8;    //using the built in LED
+const byte iotResetPin = D7;
+
+
+void ApMode() {
+  WiFi.mode(WIFI_AP);
+  Serial.print("Setting soft-AP configuration ... ");
+  Serial.println(WiFi.softAPConfig(local_IP, gateway, subnet) ? "Ready" : "Failed!");
+
+  Serial.print("Setting soft-AP ... ");
+  Serial.println(WiFi.softAP(ssid,password) ? "Ready" : "Failed!");
+  //WiFi.softAP(ssid);
+  //WiFi.softAP(ssid, password, channel, hidden, max_connection)
+  
+  Serial.print("Soft-AP IP address = ");
+  Serial.println(WiFi.softAPIP());
+  // WiFi.softAP("Sensor", "admin");
+  configuration.state = wifi_ap_mode;
+}
 
 void setup() {
-  configuration.state = booting;
-
   Serial.begin(9600);
   Serial.println("Booting");
+
+  configuration.state = booting;
+  EEPROM.begin(sizeof(struct settings) );
+  
   sprintf(ssid, "sensor-%08X\n", ESP.getChipId());
   sprintf(password, "123456789");
-  
-  // start original start
-  // WiFi.mode(WIFI_STA);
-  // WiFi.begin(ssid, password);
-  // while (WiFi.waitForConnectResult() != WL_CONNECTED) {
-  //   Serial.println("Connection Failed! Rebooting...");
-  //   delay(5000);
-  //   ESP.restart();
-  // }
-  // end original start
 
-  EEPROM.begin(sizeof(struct settings) );
-  EEPROM.get( 0, user_wifi );
-   
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(user_wifi.ssid, user_wifi.password);
-  
-  configuration.state = wifi_connecting;
-  byte tries = 0;
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(1000);
-    Serial.println("Retry connecting");
-    Serial.printf(" ESP8266 Chip id = %08X\n", ESP.getChipId());
-    if (tries++ > 15) {
-      WiFi.mode(WIFI_AP);
-      Serial.print("Setting soft-AP configuration ... ");
-      Serial.println(WiFi.softAPConfig(local_IP, gateway, subnet) ? "Ready" : "Failed!");
+  pinMode(ledPin, OUTPUT);
+  pinMode(iotResetPin, INPUT_PULLUP);
 
-      Serial.print("Setting soft-AP ... ");
-      Serial.println(WiFi.softAP(ssid,password) ? "Ready" : "Failed!");
-      //WiFi.softAP(ssid);
-      //WiFi.softAP(ssid, password, channel, hidden, max_connection)
-      
-      Serial.print("Soft-AP IP address = ");
-      Serial.println(WiFi.softAPIP());
-      // WiFi.softAP("Sensor", "admin");
-      configuration.state = wifi_ap_mode;
-
-      server.on("/", handlePortal);
-      server.begin();
-      break;
+  if (!digitalRead(iotResetPin)) {
+    Serial.println("recover");
+    configuration.state = wifi_reset;
+    ApMode();
+  } else {
+    configuration.state = wifi_connecting;
+    // Read network data.  
+    EEPROM.get( 0, user_wifi );
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(user_wifi.ssid, user_wifi.password);
+    byte tries = 0;
+    while (WiFi.status() != WL_CONNECTED) {
+      delay(1000);
+      Serial.println("Retry connecting");
+      if (tries++ > 15) {
+        Serial.println("Failed, start ApMode()");
+        ApMode();
+        break;
+      }
     }
   }
-
   
   if (WiFi.status() == WL_CONNECTED) {
     configuration.state = wifi_ready;
-    Serial.println("wifi_ready set");
-  } else {
-    Serial.println("wifi is not ready");
   }
-  
-
-  pinMode(ledPin, OUTPUT);
+   
   startMillis = millis();  //initial start time
   
   // Port defaults to 8266
@@ -121,6 +119,8 @@ void setup() {
 
     case wifi_ap_mode:
       Serial.println("started WiFi AP");
+      server.on("/", handlePortal);
+      server.begin();
     break;
 
     case wifi_ready:
@@ -169,6 +169,42 @@ void setup() {
 }
 
 
+void ShowClients() 
+{
+  unsigned char number_client;
+  struct station_info *stat_info;
+  
+  struct ip4_addr *IPaddress;
+  IPAddress address;
+  int cnt=1;
+  
+  number_client = wifi_softap_get_station_num();
+  stat_info = wifi_softap_get_station_info();
+  
+  Serial.print("Connected clients: ");
+  Serial.println(number_client);
+
+  while (stat_info != NULL)
+  {
+      IPaddress = &stat_info->ip;
+      address = IPaddress->addr;
+
+      Serial.print(cnt);
+      Serial.print(": IP: ");
+      Serial.print((address));
+      Serial.print(" MAC: ");
+
+      uint8_t *p = stat_info->bssid;
+      Serial.printf("%02X:%02X:%02X:%02X:%02X:%02X", p[0], p[1], p[2], p[3], p[4], p[5]);
+
+      stat_info = STAILQ_NEXT(stat_info, next);
+      cnt++;
+      Serial.println();
+  }
+}
+
+
+
 void loop() {
   switch (configuration.state)
   {
@@ -180,7 +216,8 @@ void loop() {
   case wifi_ap_mode:
     // could not connect, waiting for new configuration.
     server.handleClient();
-    period = 200; // blink fast
+
+    period = 2000; // blink fast
     break;
 
   default:
@@ -193,10 +230,9 @@ void loop() {
   if (currentMillis - startMillis >= period)  //test whether the period has elapsed
   {
     digitalWrite(ledPin, !digitalRead(ledPin));  //if so, change the state of the LED.  Uses a neat trick to change the state
-    // Serial.print("IP address: ");
-    // Serial.println(WiFi.localIP());
-    // Serial.print("AP IP address: ");
-    // Serial.println( WiFi.softAPIP());
+    if (configuration.state == wifi_ap_mode) 
+      ShowClients();
+
     startMillis = currentMillis;  //IMPORTANT to save the start time of the current LED state.
   }
 
