@@ -4,10 +4,12 @@
 #include <ArduinoOTA.h>
 #include <EEPROM.h>
 #include <ESP8266WebServer.h>
+#include <TelnetStream.h>
 
+#include "Credentials.h"
+#include "Ota.h"
+#include "Controls.h"
 
-// char *ssid = "sensor";
-// char *password = "123456789";
 char ssid[20];
 char password[20];
 
@@ -27,16 +29,23 @@ struct system_configuration {
 } configuration;
 
 struct settings {
-  char ssid[32];
-  char password[32];
+  char ssid[32];          // the SSID of the netwerk
+  char password[32];      // the WifiPassword
+  char energy_topic[32];  // the path to the topic on which the current wattage is found.
 } user_wifi = {};
 
 
 unsigned long startMillis;  //some global variables available anywhere in the program
 unsigned long currentMillis;
 unsigned long period = 1000;  //the value is a number of milliseconds
-const byte ledPin = D8;    //using the built in LED
-const byte iotResetPin = D7;
+
+const byte Led_pin = D4; //using the built in LED
+const byte Pump = D3;    
+const byte Heater_1 = D2;    //using the built in LED
+const byte Heater_3 = D6;    //using the built in LED
+const byte Heater_2 = D5;    //using the built in LED
+
+const byte iotResetPin = D1;
 
 
 void ApMode() {
@@ -56,6 +65,18 @@ void ApMode() {
 }
 
 void setup() {
+  pinMode(Heater_1, OUTPUT);
+  pinMode(Heater_2, OUTPUT);
+  pinMode(Heater_3, OUTPUT);
+  pinMode(Pump, OUTPUT);
+  pinMode(iotResetPin, INPUT_PULLUP);
+
+  // First turn every thing off
+  TurnOff(Heater_1);
+  TurnOff(Heater_2);
+  TurnOff(Heater_3);
+  TurnOff(Pump);
+  
   Serial.begin(9600);
   Serial.println("Booting");
 
@@ -63,10 +84,10 @@ void setup() {
   EEPROM.begin(sizeof(struct settings) );
   
   sprintf(ssid, "sensor-%08X\n", ESP.getChipId());
-  sprintf(password, "123456789");
+  sprintf(password, ACCESSPOINT_PASS);
 
-  pinMode(ledPin, OUTPUT);
-  pinMode(iotResetPin, INPUT_PULLUP);
+  
+  
 
   if (!digitalRead(iotResetPin)) {
     Serial.println("recover");
@@ -118,44 +139,14 @@ void setup() {
     break;
 
     case wifi_ap_mode:
+      TurnOn(Led_pin);
       Serial.println("started WiFi AP");
       server.on("/", handlePortal);
       server.begin();
     break;
 
     case wifi_ready:
-      ArduinoOTA.onStart([]() {
-      String type;
-      if (ArduinoOTA.getCommand() == U_FLASH) {
-        type = "sketch";
-      } else {  // U_FS
-        type = "filesystem";
-      }
-
-      // NOTE: if updating FS this would be the place to unmount FS using FS.end()
-      Serial.println("Start updating " + type);
-      });
-      ArduinoOTA.onEnd([]() {
-        Serial.println("\nEnd");
-      });
-      ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-        Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
-      });
-      ArduinoOTA.onError([](ota_error_t error) {
-        Serial.printf("Error[%u]: ", error);
-        if (error == OTA_AUTH_ERROR) {
-          Serial.println("Auth Failed");
-        } else if (error == OTA_BEGIN_ERROR) {
-          Serial.println("Begin Failed");
-        } else if (error == OTA_CONNECT_ERROR) {
-          Serial.println("Connect Failed");
-        } else if (error == OTA_RECEIVE_ERROR) {
-          Serial.println("Receive Failed");
-        } else if (error == OTA_END_ERROR) {
-          Serial.println("End Failed");
-        }
-      });
-      ArduinoOTA.begin();
+      setupOTA();
       Serial.println("Ready for OTA");
       Serial.print("IP address: ");
       Serial.println(WiFi.localIP());
@@ -205,19 +196,21 @@ void ShowClients()
 
 
 
+
+byte loper = 0x01;
 void loop() {
   switch (configuration.state)
   {
   case wifi_ready:
     // wifi connected to network. ready
     ArduinoOTA.handle();
-    period = 1000; // blink slow
+    period = 150; // blink slow
     break;
   case wifi_ap_mode:
     // could not connect, waiting for new configuration.
     server.handleClient();
 
-    period = 2000; // blink fast
+    period = 300; // slow blink
     break;
 
   default:
@@ -229,7 +222,15 @@ void loop() {
   currentMillis = millis();  //get the current "time" (actually the number of milliseconds since the program started)
   if (currentMillis - startMillis >= period)  //test whether the period has elapsed
   {
-    digitalWrite(ledPin, !digitalRead(ledPin));  //if so, change the state of the LED.  Uses a neat trick to change the state
+    if ( (loper & 0x02 ) == 0x02) TurnOn(Heater_1); else TurnOff(Heater_1);
+    if ( (loper & 0x04 ) == 0x04) TurnOn(Heater_2); else TurnOff(Heater_2);
+    if ( (loper & 0x08 ) == 0x08) TurnOn(Heater_3); else TurnOff(Heater_3);
+    if ( (loper & 0x01 ) == 0x01) TurnOn(Pump); else TurnOff(Pump);
+    
+    loper++;
+
+
+    // digitalWrite(Heater_1, !digitalRead(Heater_1));  //if so, change the state of the LED.  Uses a neat trick to change the state
     if (configuration.state == wifi_ap_mode) 
       ShowClients();
 
