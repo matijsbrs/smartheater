@@ -5,6 +5,8 @@
 #include <EEPROM.h>
 #include <ESP8266WebServer.h>
 #include <TelnetStream.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
 
 #include "Credentials.h"
 #include "Ota.h"
@@ -45,7 +47,15 @@ const byte Heater_1 = D2;    //using the built in LED
 const byte Heater_3 = D6;    //using the built in LED
 const byte Heater_2 = D5;    //using the built in LED
 
+const int oneWireBus = D7;  
+
 const byte iotResetPin = D1;
+
+// Onewire setup
+// Setup a oneWire instance to communicate with any OneWire devices
+OneWire oneWire(oneWireBus);
+// Pass our oneWire reference to Dallas Temperature sensor 
+DallasTemperature sensors(&oneWire);
 
 
 void ApMode() {
@@ -86,7 +96,8 @@ void setup() {
   sprintf(ssid, "sensor-%08X\n", ESP.getChipId());
   sprintf(password, ACCESSPOINT_PASS);
 
-  
+  // start the sensor
+  sensors.begin();
   
 
   if (!digitalRead(iotResetPin)) {
@@ -195,7 +206,12 @@ void ShowClients()
 }
 
 
-
+void sensor_loop() {
+  sensors.requestTemperatures(); 
+  float temperatureC = sensors.getTempCByIndex(0);
+  Serial.print(temperatureC);
+  Serial.println("ºC");
+}
 
 byte loper = 0x01;
 void loop() {
@@ -210,7 +226,7 @@ void loop() {
     // could not connect, waiting for new configuration.
     server.handleClient();
 
-    period = 300; // slow blink
+    period = 900; // slow blink
     break;
 
   default:
@@ -227,6 +243,8 @@ void loop() {
     if ( (loper & 0x08 ) == 0x08) TurnOn(Heater_3); else TurnOff(Heater_3);
     if ( (loper & 0x01 ) == 0x01) TurnOn(Pump); else TurnOff(Pump);
     
+    if ( (loper & 0x04 ) == 0x04) sensor_loop();
+
     loper++;
 
 
