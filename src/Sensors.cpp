@@ -93,6 +93,8 @@ void sensor_setup(int precision)
         }
     }
     // set the resolution to 12 bit per device
+
+    
     sensors.setResolution(T1, precision);
     sensors.setResolution(T2, precision);
     sensors.setResolution(T3, precision);
