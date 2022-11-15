@@ -214,6 +214,7 @@ void printAddress(DeviceAddress deviceAddress)
         Serial.print(deviceAddress[i], HEX);
     }
 }
+
 // function to print the temperature for a device
 void printTemperature(DeviceAddress deviceAddress)
 {

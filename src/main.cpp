@@ -22,6 +22,9 @@ IPAddress subnet(255, 255, 255, 0);
 
 ESP8266WebServer server(80);
 
+#define SENSOR_CV_TEMPERATURE T2
+#define SENSOR_VLOER_TEMPERATURE T1
+
 void handlePortal();
 enum system_state
 {
@@ -212,6 +215,12 @@ void ShowClients()
 
 
 byte loper = 0x01;
+float setPoint = 20.0f;
+float CvOvertemp = 27.0f;
+float hysteresis = 0.25f;
+float VloerSetPoint = setPoint;
+int power = 1;
+
 void loop()
 {
   switch (configuration.state)
@@ -219,7 +228,7 @@ void loop()
   case wifi_ready:
     // wifi connected to network. ready
     ArduinoOTA.handle();
-    period = 150; // blink slow
+    period = 1000; // blink slow
     break;
   case wifi_ap_mode:
     // could not connect, waiting for new configuration.
@@ -237,29 +246,58 @@ void loop()
   currentMillis = millis();                  // get the current "time" (actually the number of milliseconds since the program started)
   if (currentMillis - startMillis >= period) // test whether the period has elapsed
   {
-    if ((loper & 0x02) == 0x02)
-      TurnOn(Heater_1);
-    else
-      TurnOff(Heater_1);
-    if ((loper & 0x04) == 0x04)
-      TurnOn(Heater_2);
-    else
-      TurnOff(Heater_2);
-    if ((loper & 0x08) == 0x08){
-      TurnOn(Heater_3);
-      loper = 0;
+    sensor_loop();
+
+    float vloerTemp = sensors.getTempC(SENSOR_VLOER_TEMPERATURE );
+    if ( vloerTemp >= VloerSetPoint ) {
+      VloerSetPoint = setPoint - hysteresis;
+      power = 0; 
+      // turn off  
+    } else if ( vloerTemp <= VloerSetPoint ) {
+      VloerSetPoint = setPoint + hysteresis;
+      power = 1;
+      // turn on
     }
-    else
-      TurnOff(Heater_3);
-    if ((loper & 0x01) == 0x01)
+    
+    if ( sensors.getTempC(SENSOR_CV_TEMPERATURE) > CvOvertemp ) {
+      Serial.println("CV heating detected TURN OFF");
+      power = 0;
       TurnOn(Pump);
-    else
+    } else {
       TurnOff(Pump);
+    }
 
-    if (loper == 4)
-      sensor_loop();
+    if ( power == 1) {
+      TurnOn(Heater_1);
+      TurnOn(Pump);
+    } else {
+      TurnOff(Heater_1);
+      TurnOff(Pump);
+    }
 
-    loper++;
+    // if ((loper & 0x02) == 0x02)
+    //   TurnOn(Heater_1);
+    // else
+    //   TurnOff(Heater_1);
+    // if ((loper & 0x04) == 0x04)
+    //   TurnOn(Heater_2);
+    // else
+    //   TurnOff(Heater_2);
+    // if ((loper & 0x08) == 0x08){
+    //   TurnOn(Heater_3);
+    //   loper = 0;
+    // }
+    // else
+    //   TurnOff(Heater_3);
+    // if ((loper & 0x01) == 0x01)
+    //   TurnOn(Pump);
+    // else
+    //   TurnOff(Pump);
+
+    // if (loper == 4)
+    //   sensor_loop();
+
+    // loper++;
 
     // digitalWrite(Heater_1, !digitalRead(Heater_1));  //if so, change the state of the LED.  Uses a neat trick to change the state
     if (configuration.state == wifi_ap_mode)
