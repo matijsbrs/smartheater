@@ -17,7 +17,7 @@
 
 // function declarations
 // void mqtt_callback(char* topic, byte* message, unsigned int length);
-void transmit_mqtt(const char * Field, const char * payload);
+void transmit_mqtt(const char * extTopic,const char * Field, const char * payload);
 
 char ssid[20];
 char password[20];
