@@ -35,6 +35,8 @@ PubSubClient client(espClient);
 const char* applicationUUID = "123456789";
 const char* default_mqtt_server = "192.168.2.201";
 const char* TOPIC = "Climate/Floor";
+const char* Version = "V1.2.4";
+
 // MQTT stuff end
 
 #define SENSOR_CV_TEMPERATURE T2
@@ -65,19 +67,24 @@ struct settings
   float setPoint;
   float CvOvertemp;
   float hysteresis;
+  unsigned long pumpPostRunTime;
+  unsigned long ac24PostRunTime;
+  unsigned long period;
 } user_wifi = {};
 
 unsigned long startMillis; // some global variables available anywhere in the program
 unsigned long currentMillis;
 unsigned long pumpOnMillis; // timestamp when the pump is on.
-unsigned long pumpPostRunTime = 900000;  // 900sec / 15min number of milliseconds the pump needs to run after turned off.
 unsigned long ac24Millis;
-unsigned long ac24PostRunTime = 20000; // keep trafo on for 20sec.
-unsigned long period = 1000; // the value is a number of milliseconds
 
-float default_setPoint = 20.0f;
+float default_setPoint = 22.0f;
 float default_CvOvertemp = 27.0f;
 float default_hysteresis = 0.25f;
+unsigned long default_pumpPostRunTime = 900000;  // 900sec / 15min number of milliseconds the pump needs to run after turned off.
+unsigned long default_ac24PostRunTime = 20000; // keep trafo on for 20sec.
+unsigned long default_period = 1000; // the value is a number of milliseconds
+
+
 
 const byte Led_pin   = D4; // using the built in LED
 const byte Pump      = D3;
@@ -87,6 +94,48 @@ const byte Valve     = D5; // using the built in LED
 
 const byte iotResetPin = D1;
 
+void Validate_settings() {
+    if ( user_wifi.setPoint > 25.0f ) user_wifi.setPoint = 25.0f;
+    if ( user_wifi.setPoint < 0.0f  ) user_wifi.setPoint = 0.0f;
+
+    if ( user_wifi.CvOvertemp > 45.0f ) user_wifi.CvOvertemp = 45.0f;
+    if ( user_wifi.CvOvertemp < 0.0f  ) user_wifi.CvOvertemp = 0.0f;
+
+    if ( user_wifi.hysteresis > 2.5f ) user_wifi.hysteresis = 2.5f;
+    if ( user_wifi.hysteresis < 0.1f  ) user_wifi.hysteresis = 0.1f;
+    
+    if (user_wifi.pumpPostRunTime < 60000 ) user_wifi.pumpPostRunTime = 60000;
+    if (user_wifi.pumpPostRunTime > 86400000 ) user_wifi.pumpPostRunTime = 86400000;
+
+    if (user_wifi.ac24PostRunTime < 10000 ) user_wifi.ac24PostRunTime = 10000;
+    if (user_wifi.ac24PostRunTime > 86400000 ) user_wifi.ac24PostRunTime = 86400000;
+
+    if (user_wifi.period < 100 ) user_wifi.period = 100;
+    if (user_wifi.period > 10000 ) user_wifi.period = 10000;
+}
+
+void Load_defaults() {
+  user_wifi.setPoint = default_setPoint;
+  user_wifi.CvOvertemp = default_CvOvertemp;
+  user_wifi.hysteresis = default_hysteresis;
+  user_wifi.period = default_period;
+  user_wifi.ac24PostRunTime = default_ac24PostRunTime;
+  user_wifi.pumpPostRunTime = default_pumpPostRunTime;
+  strcpy(user_wifi.mqtt_server, default_mqtt_server);
+}
+
+void show_settings() {
+  char value[32];
+  snprintf(value, 32, "%d.%d.%d.%d", WiFi.localIP()[0], WiFi.localIP()[1], WiFi.localIP()[2], WiFi.localIP()[3] );
+  transmit_mqtt("settings","ip",value);
+  snprintf(value, 32, "%ld", user_wifi.pumpPostRunTime/1000);
+  transmit_mqtt("settings","pumpPostRunTime.s",value);
+  snprintf(value, 32, "%ld", user_wifi.ac24PostRunTime/1000);
+  transmit_mqtt("settings","ac24PostRunTime.s",value);
+  snprintf(value, 32, "%ld", user_wifi.period);
+  transmit_mqtt("settings","period.ms",value);
+  transmit_mqtt("settings","version",Version);
+}
 
 void ApMode()
 {
@@ -129,30 +178,46 @@ void mqtt_callback(char* topic, byte* message, unsigned int length) {
   if (messageTemp.startsWith("floorsetpoint=")) {
     user_wifi.setPoint = messageTemp.substring(14).toFloat();
     Serial.printf("floor Setpoint: %f\n", user_wifi.setPoint);
+
   } else if (messageTemp.startsWith("gcvsetpoint=")) {
     user_wifi.CvOvertemp = messageTemp.substring(12).toFloat();
     Serial.printf("gcv Setpoint: %f\n", user_wifi.CvOvertemp);
+
   } else if (messageTemp.startsWith("hysteresis=")) {
     user_wifi.hysteresis = messageTemp.substring(11).toFloat();
     Serial.printf("hysteresis: %f\n", user_wifi.hysteresis);
+
+  } else if (messageTemp == "pumpPostRunTime=" ) {
+    user_wifi.pumpPostRunTime = messageTemp.substring(16).toInt() * 1000;
+    Validate_settings();
+    Serial.printf("pumpPostRunTime: %ld\n", user_wifi.pumpPostRunTime);
+
+  } else if (messageTemp == "ac24PostRunTime=" ) {
+    user_wifi.ac24PostRunTime = messageTemp.substring(16).toInt() * 1000;
+    Validate_settings();
+    Serial.printf("ac24PostRunTime: %ld\n", user_wifi.ac24PostRunTime);
+
+  } else if (messageTemp == "period=" ) {
+    user_wifi.period = messageTemp.substring(7).toInt();\
+    Validate_settings();
+    Serial.printf("period: %ld\n", user_wifi.period);
+
   } else if (messageTemp == "settings=read" ) {
     EEPROM.get(0, user_wifi);
+    Validate_settings();
   } else if (messageTemp == "settings=write" ) {
-       EEPROM.put(0, user_wifi);
-    EEPROM.commit();
-  } else if (messageTemp == "settings=default" ) {
-    user_wifi.setPoint = default_setPoint;
-    user_wifi.CvOvertemp = default_CvOvertemp;
-    user_wifi.hysteresis = default_hysteresis;
-    strcpy(user_wifi.mqtt_server, default_mqtt_server);
     EEPROM.put(0, user_wifi);
     EEPROM.commit();
+  } else if (messageTemp == "settings=default" ) {
+    Load_defaults();
+    EEPROM.put(0, user_wifi);
+    EEPROM.commit();
+  
+  } else if (messageTemp == "settings=show" ) {
+    show_settings();
+  
   } else if (messageTemp == "system=restart" ) {
     ESP.restart();
-  } else if (messageTemp == "system=showip" ) {
-    char ip[32];
-    snprintf(ip, 32, "%d.%d.%d.%d", WiFi.localIP()[0], WiFi.localIP()[1], WiFi.localIP()[2], WiFi.localIP()[3] );
-    transmit_mqtt("ip",ip);
   }
 
 
@@ -181,6 +246,7 @@ void setup()
 
   configuration.state = booting;
   EEPROM.begin(sizeof(struct settings));
+  Load_defaults();
 
   sprintf(ssid, "sensor-%08X\n", ESP.getChipId());
   sprintf(password, ACCESSPOINT_PASS);
@@ -196,6 +262,9 @@ void setup()
     configuration.state = wifi_connecting;
     // Read network data.
     EEPROM.get(0, user_wifi);
+
+    // run Validate to ensure proper operations.
+    Validate_settings();
 
     Serial.printf("Wifi ssid: %s\n", user_wifi.ssid);
     Serial.printf("MQTT host: %s\n", user_wifi.mqtt_server);
@@ -218,6 +287,7 @@ void setup()
     }
   }
 
+  
   if (WiFi.status() == WL_CONNECTED)
   {
     configuration.state = wifi_ready;
@@ -262,9 +332,9 @@ void setup()
     // set up mqtt stuff
     client.setServer(user_wifi.mqtt_server, 1883);
     client.setCallback(mqtt_callback);
-    char ip[32];
-    snprintf(ip, 32, "%d.%d.%d.%d", WiFi.localIP()[0], WiFi.localIP()[1], WiFi.localIP()[2], WiFi.localIP()[3] );
-    transmit_mqtt("ip",ip);
+    // on ready push settings to mqtt.
+    show_settings();
+    
     break;
 
   default:
@@ -290,7 +360,7 @@ int connect_mqtt() {
   if (client.connect(ssid)) {
     Serial.println("connected");
     char topic[32];
-    snprintf(topic, 32, "sensor-%08X/set", ESP.getChipId());
+    snprintf(topic, 32, "sensor-%08X/cmd", ESP.getChipId());
     Serial.println(topic);
     client.subscribe(topic);
     return 1;
@@ -301,10 +371,10 @@ int connect_mqtt() {
   return 0;
 }
 
-void transmit_mqtt(const char * Field, const char * payload) {
+void transmit_mqtt(const char * extTopic, const char * Field, const char * payload) {
   if (connect_mqtt()) {
     char topic[75];
-    snprintf(topic, 75, "sensor-%08X/%s/%s", ESP.getChipId(), TOPIC,Field);
+    snprintf(topic, 75, "sensor-%08X/%s/%s", ESP.getChipId(), extTopic,Field);
     // Serial.println(topic);
     client.publish(topic, payload);
   } else {
@@ -315,13 +385,13 @@ void transmit_mqtt(const char * Field, const char * payload) {
 void transmit_mqtt_influx(const char * Field, float value) {
   char payload[75];
   snprintf(payload, 75, "climatic,host=sensor-%08X %s=%f",ESP.getChipId(),Field, value);
-  transmit_mqtt("state", payload);
+  transmit_mqtt(TOPIC, "state", payload);
 }
 
 void transmit_mqtt_float(const char * Field, float value) {
   char payload[20];
   snprintf(payload, 20, "%f",value);
-  transmit_mqtt(Field, payload);
+  transmit_mqtt(TOPIC, Field, payload);
 }
 
 
@@ -393,7 +463,7 @@ void loop()
   // Blinking led.
 
   currentMillis = millis();                  // get the current "time" (actually the number of milliseconds since the program started)
-  if (((currentMillis - startMillis) >= period) && (configuration.state == wifi_ready) )// test whether the period has elapsed
+  if (((currentMillis - startMillis) >= user_wifi.period) && (configuration.state == wifi_ready) )// test whether the period has elapsed
   {
     //sensor_loop(); // show all data from all found sensors. 
     sensors.requestTemperatures();
@@ -401,103 +471,126 @@ void loop()
     float vloerTemp = sensors.getTempC(SENSOR_VLOER_TEMPERATURE ) + 0.31f; // slight offset compensation.
     float cvAanvoerTemp = sensors.getTempC(SENSOR_CV_TEMPERATURE);
 
-    transmit_mqtt_influx("Wifi.rssi",WiFi.RSSI());
-    transmit_mqtt_influx("VloerTemp.c",vloerTemp);
-    transmit_mqtt_influx("AanvoerTemp.c",cvAanvoerTemp);
-    transmit_mqtt_influx("VloerSetTemp.c",user_wifi.setPoint);
-    transmit_mqtt_influx("AanvoerSetTemp.c",user_wifi.CvOvertemp);
-    transmit_mqtt_influx("Hysteresis.c",user_wifi.hysteresis);
-
-
-    if ( vloerTemp >= VloerSetPoint ) {
-      VloerSetPoint = user_wifi.setPoint - user_wifi.hysteresis;
-      ECV_Power = 0; 
-      // turn off  
-    } else if ( vloerTemp <= VloerSetPoint ) {
-      VloerSetPoint = user_wifi.setPoint + user_wifi.hysteresis;
-      ECV_Power = 1;
-      // turn on
-    }
-    
-    // If water from the Gas CV is warmer that CvOvertemp assume the Room Thermostat has kicked in.
-    if ( cvAanvoerTemp > user_wifi.CvOvertemp ) {
-      Serial.println("CV heating detected TURN OFF");
-      GCV_State = 1;
-      transmit_mqtt_influx("Aanvoer.state",1.0f);
-      Valve_State = 1;
-    } else {
-      GCV_State = 0;
-      transmit_mqtt_influx("Aanvoer.state",0.0f);
-    }
-
-    
-
-    // only when ECV is needed and no Gas CV is active
-    if ( (ECV_Power == 1) && (GCV_State == 0) ) {
-      TurnOn(Heater);
-      transmit_mqtt_influx("Heater.state",1.0f);
-      Valve_State = 0;
-    } else {
+    if ( (vloerTemp > 45.0f ) || (vloerTemp < 0.0f ) ) {
+      // error! 
+      // safe mode 
       TurnOff(Heater);
-      transmit_mqtt_influx("Heater.state",0.0f);
-    }
-
-    // if ECV or GCV is active turn on the pump.
-    if ( (ECV_Power == 1 ) || (GCV_State == 1)) {
-      Pump_Power = 1;
-    } else {
-      Pump_Power = 0;
-    }
-
-
-
-    if ( Pump_Power == 1 ) {
-      pumpOnMillis = currentMillis;
-      TurnOn(Pump);
-      transmit_mqtt_influx("Pomp.state",1.0f);
-    } else {
-      if ( (currentMillis - pumpOnMillis )  >= pumpPostRunTime ) {
-        TurnOff(Pump);
-        transmit_mqtt_influx("Pomp.state",0.0f);
-      } else {
-        transmit_mqtt_influx("Pomp.state",0.5f);
-        Serial.println("Pump off delayed.");
-      }
-    }
-    
-    if ( Valve_State == 1) {
-      TurnOn(Valve);
-      transmit_mqtt_influx("Valve.state",1.0f);
-    } else if ( Valve_State == 0) {
-      TurnOff(Valve);
-      transmit_mqtt_influx("Valve.state",0.0f);
-    } 
-
-    if ( Valve_State != Valve_Previous_state ) {
-      Valve_Previous_state = Valve_State;
-      ac24_Power = 1;
-    }
-
-    if ( ac24_Power == 1) {
-      ac24_Power = 0;
-      ac24Millis = currentMillis;
       TurnOn(ac24);
-      transmit_mqtt_influx("ac24.state",1.0f);
+      TurnOn(Valve);
+      TurnOn(Pump);
+      Serial.println("Vloertemperature out of bound! enter safe mode!");
+      transmit_mqtt_influx("VloerTemp.err",1.0f); 
+
+    } else if ((cvAanvoerTemp > 90.0f ) || (cvAanvoerTemp < 0.0f )) {
+      // error 
+      // safe mode 
+      TurnOff(Heater);
+      TurnOn(ac24);
+      TurnOn(Valve);
+      TurnOn(Pump);
+      Serial.println("aanvoertemperature out of bound! enter safe mode!");
+
+      transmit_mqtt_influx("AanvoerTemp.err",1.0f);  
+      
     } else {
-      if ( (currentMillis - ac24Millis )  >= ac24PostRunTime ) {
-        TurnOff(ac24);
-        transmit_mqtt_influx("ac24.state",0.0f);
+
+      transmit_mqtt_influx("VloerTemp.err",0.0f);  
+      transmit_mqtt_influx("AanvoerTemp.err",0.0f);  
+
+      transmit_mqtt_influx("Wifi.rssi",WiFi.RSSI());
+      transmit_mqtt_influx("VloerTemp.c",vloerTemp);
+      transmit_mqtt_influx("AanvoerTemp.c",cvAanvoerTemp);
+      transmit_mqtt_influx("VloerSetTemp.c",user_wifi.setPoint);
+      transmit_mqtt_influx("AanvoerSetTemp.c",user_wifi.CvOvertemp);
+      transmit_mqtt_influx("Hysteresis.c",user_wifi.hysteresis);
+
+
+      if ( vloerTemp >= VloerSetPoint ) {
+        VloerSetPoint = user_wifi.setPoint - user_wifi.hysteresis;
+        ECV_Power = 0; 
+        // turn off  
+      } else if ( vloerTemp <= VloerSetPoint ) {
+        VloerSetPoint = user_wifi.setPoint + user_wifi.hysteresis;
+        ECV_Power = 1;
+        // turn on
+      }
+      
+      // If water from the Gas CV is warmer that CvOvertemp assume the Room Thermostat has kicked in.
+      if ( cvAanvoerTemp > user_wifi.CvOvertemp ) {
+        Serial.println("CV heating detected TURN OFF");
+        GCV_State = 1;
+        transmit_mqtt_influx("Aanvoer.state",1.0f);
+        Valve_State = 1;
       } else {
+        GCV_State = 0;
+        transmit_mqtt_influx("Aanvoer.state",0.0f);
+      }
+
+      
+
+      // only when ECV is needed and no Gas CV is active
+      if ( (ECV_Power == 1) && (GCV_State == 0) ) {
+        TurnOn(Heater);
+        transmit_mqtt_influx("Heater.state",1.0f);
+        Valve_State = 0;
+      } else {
+        TurnOff(Heater);
+        transmit_mqtt_influx("Heater.state",0.0f);
+      }
+
+      // if ECV or GCV is active turn on the pump.
+      if ( (ECV_Power == 1 ) || (GCV_State == 1)) {
+        Pump_Power = 1;
+      } else {
+        Pump_Power = 0;
+      }
+
+
+
+      if ( Pump_Power == 1 ) {
+        pumpOnMillis = currentMillis;
+        TurnOn(Pump);
+        transmit_mqtt_influx("Pomp.state",1.0f);
+      } else {
+        if ( (currentMillis - pumpOnMillis )  >= user_wifi.pumpPostRunTime ) {
+          TurnOff(Pump);
+          transmit_mqtt_influx("Pomp.state",0.0f);
+        } else {
+          transmit_mqtt_influx("Pomp.state",0.5f);
+          Serial.println("Pump off delayed.");
+        }
+      }
+      
+      if ( Valve_State == 1) {
+        TurnOn(Valve);
+        transmit_mqtt_influx("Valve.state",1.0f);
+      } else if ( Valve_State == 0) {
+        TurnOff(Valve);
+        transmit_mqtt_influx("Valve.state",0.0f);
+      } 
+
+      if ( Valve_State != Valve_Previous_state ) {
+        Valve_Previous_state = Valve_State;
+        ac24_Power = 1;
+      }
+
+      if ( ac24_Power == 1) {
+        ac24_Power = 0;
+        ac24Millis = currentMillis;
         TurnOn(ac24);
         transmit_mqtt_influx("ac24.state",1.0f);
+      } else {
+        if ( (currentMillis - ac24Millis )  >= user_wifi.ac24PostRunTime ) {
+          TurnOff(ac24);
+          transmit_mqtt_influx("ac24.state",0.0f);
+        } else {
+          TurnOn(ac24);
+          transmit_mqtt_influx("ac24.state",1.0f);
+        }
       }
     }
-    
-    
+      
   
-    
-
- 
     // digitalWrite(Heater_1, !digitalRead(Heater_1));  //if so, change the state of the LED.  Uses a neat trick to change the state
     if (configuration.state == wifi_ap_mode)
       ShowClients();
@@ -529,7 +622,6 @@ void handlePortal()
   }
   else
   {
-
     server.send(200, "text/html", "<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><title>Wifi Setup</title> <style>*,::after,::before{box-sizing:border-box;}body{margin:0;font-family:'Segoe UI',Roboto,'Helvetica Neue',Arial,'Noto Sans','Liberation Sans';font-size:1rem;font-weight:400;line-height:1.5;color:#212529;background-color:#f5f5f5;}.form-control{display:block;width:100%;height:calc(1.5em + .75rem + 2px);border:1px solid #ced4da;}button{cursor: pointer;border:1px solid transparent;color:#fff;background-color:#007bff;border-color:#007bff;padding:.5rem 1rem;font-size:1.25rem;line-height:1.5;border-radius:.3rem;width:100%}.form-signin{width:100%;max-width:400px;padding:15px;margin:auto;}h1{text-align: center}</style> </head> <body><main class='form-signin'> <form action='/' method='post'> <h1 class=''>Wifi Setup</h1><br/><div class='form-floating'><label>SSID</label><input type='text' class='form-control' name='ssid'> </div><div class='form-floating'><br/><label>Password</label><input type='password' class='form-control' name='password'></div><br/><br/><button type='submit'>Save</button><p style='text-align: right'><a href='https://www.mrdiy.ca' style='color: #32C5FF'>mrdiy.ca</a></p></form></main> </body></html>");
   }
 }
